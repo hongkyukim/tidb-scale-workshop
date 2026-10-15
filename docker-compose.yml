@@ -1,0 +1,122 @@
+version: '3.8'
+
+services:
+  pd:
+    image: pingcap/pd:latest
+    ports:
+      - "2379:2379"
+    environment:
+      - TZ=UTC
+    networks:
+      - tidb-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:2379/pd/api/v1/status"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  tikv:
+    image: pingcap/tikv:latest
+    ports:
+      - "20160:20160"
+    environment:
+      - TZ=UTC
+    depends_on:
+      pd:
+        condition: service_healthy
+    networks:
+      - tidb-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:20160/metrics"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  tidb:
+    image: pingcap/tidb:latest
+    ports:
+      - "4000:4000"
+      - "10080:10080"
+    environment:
+      - TZ=UTC
+    depends_on:
+      pd:
+        condition: service_healthy
+      tikv:
+        condition: service_healthy
+    networks:
+      - tidb-network
+    healthcheck:
+      test: ["CMD", "mysql", "-h", "tidb", "-u", "root", "-e", "SELECT 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  scaler:
+    image: pingcap/scaler:latest
+    environment:
+      - TZ=UTC
+    depends_on:
+      tidb:
+        condition: service_healthy
+    networks:
+      - tidb-network
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    networks:
+      - tidb-network
+    depends_on:
+      - tidb
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_INSTALL_PLUGINS=grafana-worldmap-panel
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+    networks:
+      - tidb-network
+    depends_on:
+      - prometheus
+
+  app:
+    build:
+      context: ./project
+      dockerfile: Dockerfile
+    ports:
+      - "5000:5000"
+    environment:
+      - TIDB_HOST=tidb
+      - TIDB_PORT=4000
+      - TIDB_USER=root
+      - TIDB_PASSWORD=
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      tidb:
+        condition: service_healthy
+    volumes:
+      - ./project:/workspace
+    networks:
+      - tidb-network
+    command: python app/main.py
+
+networks:
+  tidb-network:
+    driver: bridge
+
+volumes:
+  prometheus-data:
+  grafana-data:
